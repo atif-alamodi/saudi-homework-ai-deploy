@@ -6,6 +6,8 @@ from fastapi.responses import HTMLResponse
 app = FastAPI(title='المساعد الدراسي')
 TIMEOUT = float(os.getenv('MODEL_TIMEOUT', '22'))
 API_KEY = os.getenv('LLM_API_KEY', 'local')
+PUBLIC_FALLBACK_URL = os.getenv('PUBLIC_FALLBACK_URL', 'https://text.pollinations.ai/openai')
+PUBLIC_FALLBACK_MODEL = os.getenv('PUBLIC_FALLBACK_MODEL', 'openai-fast')
 try:
     MODELS = json.loads(os.getenv('LLM_ENDPOINTS_JSON', '[]'))
 except Exception:
@@ -266,6 +268,29 @@ def math_to_latex_text(text: str):
     except Exception:
         return text
 
+def format_math_input(text: str):
+    try:
+        import sympy as sp
+        from sympy.parsing.sympy_parser import (
+            parse_expr, standard_transformations,
+            implicit_multiplication_application, convert_xor,
+        )
+        transformations = standard_transformations + (implicit_multiplication_application, convert_xor)
+        raw = normalize_math(text.strip())
+        raw = re.sub(r'^\s*(حل|احسب|بسّط|بسط|أوجد|اوجد|جد|فك)\s*[:：-]?\s*', '', raw, flags=re.I)
+        raw = raw.strip()
+        def parse_piece(piece):
+            return parse_expr(piece.strip(), transformations=transformations, evaluate=False)
+        if '=' in raw and raw.count('=') == 1:
+            left, right = raw.split('=', 1)
+            l, r = parse_piece(left), parse_piece(right)
+            return sp.latex(l) + ' = ' + sp.latex(r)
+        expr = parse_piece(raw)
+        return sp.latex(expr)
+    except Exception:
+        return ''
+
+
 def extract_context(q, txt):
     if not txt.strip(): return ''
     words = [x for x in re.findall(r'[\w\u0600-\u06ff]+', q.lower()) if len(x) > 2]
@@ -313,12 +338,57 @@ def call_model(m, q, ctx, stage, grade, subject):
     return r.json()['choices'][0]['message']['content']
 
 
+
+def call_public_fallback(q, ctx, stage, grade, subject):
+    system = f'''أنت معلم خبير بالمناهج المدرسية، وتشرح بالعربية الواضحة.
+المرحلة: {stage}
+الصف: {grade}
+المادة: {subject}
+
+التزم بمستوى الصف والمادة المحددين فقط، ولا تخلط بين المراحل أو المناهج.
+{subject_methodology(subject)}
+
+اكتب الحل دائمًا بهذا الترتيب:
+### فهم السؤال
+### المعطيات / المفاهيم / القاعدة
+### الحل خطوة بخطوة
+### الإجابة النهائية
+### التحقق أو المراجعة
+
+لأي سؤال حسابي: اكتب جميع الخطوات، والقوانين، والتعويضات، والوحدات عند وجودها.
+اكتب الرياضيات بصيغة LaTeX بين \( و \) أو بين \[ و \].
+استخدم \frac{{البسط}}{{المقام}} للكسور، و x^{{2}} للأسس، و \sqrt{{x}} للجذور.
+لا تستخدم / لعرض الكسور ولا ^ كتنسيق مرئي للمستخدم.
+إذا كان السؤال غير متوافق فعلًا مع الصف أو المادة، وضّح ذلك بدل اختراع إجابة.
+لا تذكر أي معلومات تقنية عن النموذج أو الاستضافة.'''
+
+    user = q + (f"\n\nسياق من الملف أو الكتاب:\n{ctx}" if ctx else "")
+    payload = {
+        'model': PUBLIC_FALLBACK_MODEL,
+        'messages': [
+            {'role':'system','content':system},
+            {'role':'user','content':user},
+        ],
+        'temperature':0.05,
+        'max_tokens':1800,
+    }
+    r = requests.post(PUBLIC_FALLBACK_URL, json=payload, timeout=max(TIMEOUT, 60))
+    r.raise_for_status()
+    data = r.json()
+    return data['choices'][0]['message']['content'].strip()
+
+
 @app.get('/health')
 def health():
     return {'ok':True,'models':[m.get('name') for m in MODELS], 'curriculum':'strict'}
 
 @app.get('/', response_class=HTMLResponse)
 def home(): return HTMLResponse(HTML, headers={'Cache-Control':'no-store, no-cache, must-revalidate, max-age=0','Pragma':'no-cache'})
+
+@app.post('/format-math')
+async def format_math(text: str = Form('')):
+    return {'ok': True, 'latex': format_math_input(text)}
+
 
 @app.post('/solve')
 async def solve(stage:str=Form(...), grade:str=Form(...), subject:str=Form(...), question:str=Form(''), files:list[UploadFile]=File(default=[])):
@@ -334,23 +404,41 @@ async def solve(stage:str=Form(...), grade:str=Form(...), subject:str=Form(...),
         return {'ok':False,'curriculum_error':True,'error':'\n'.join('• '+x for x in problems), 'allowed_subjects':CURRICULUM.get(stage,[])}
 
     ctx=extract_context(q, alltxt)
-    local=math_to_latex_text(local_math(q)) if subject=='الرياضيات' and local_math(q) else None
+    raw_local = local_math(q) if subject=='الرياضيات' else None
+    local = math_to_latex_text(raw_local) if raw_local else None
     panel=[]
+
     async def one(m):
         try:
             text=await asyncio.to_thread(call_model,m,q,ctx,stage,grade,subject)
             return {'name':m.get('name','LLM'),'ok':True,'text':text}
         except Exception as e:
             return {'name':m.get('name','LLM'),'ok':False,'error':str(e)[:180]}
+
     if MODELS:
         panel=await asyncio.gather(*(one(m) for m in MODELS[:5]))
+
     good=[x for x in panel if x.get('ok')]
-    # Prefer a connected model because it can solve all subjects; local math remains a safe fallback.
-    ans=(good[0]['text'] if good else None) or local
-    if not ans and ctx:
-        ans=('### المعلومات ذات الصلة من الملف\n\n'+ctx+'\n\n### ما يلزم لإكمال الحل\nلا يوجد نموذج لغوي متصل بالخدمة حاليًا لصياغة حل كامل لهذه المادة. تم استخراج السياق الصحيح فقط ولم يتم اختراع إجابة.')
-    if not ans:
-        ans='لا يوجد نموذج لغوي متصل بالخدمة حاليًا لحل هذه المادة. تم رفض إنشاء إجابة غير موثوقة.'
+
+    if local:
+        ans = local
+    elif good:
+        ans = good[0]['text']
+    else:
+        try:
+            fallback_text = await asyncio.to_thread(
+                call_public_fallback, q, ctx, stage, grade, subject
+            )
+            panel.append({'name':'GPT-OSS 20B','ok':True,'text':fallback_text})
+            ans = fallback_text
+        except Exception as e:
+            panel.append({'name':'GPT-OSS 20B','ok':False,'error':str(e)[:180]})
+            if ctx:
+                ans=('### المعلومات ذات الصلة من الملف\n\n'+ctx+
+                     '\n\n### تعذر إكمال الحل مؤقتًا\nتمت قراءة الملف بنجاح، لكن خدمة الاستدلال لم تستجب. أعد المحاولة بعد لحظات.')
+            else:
+                ans='تعذر الوصول إلى خدمة الاستدلال مؤقتًا. أعد المحاولة بعد لحظات.'
+
     return {'ok':True,'meta':{'stage':stage,'grade':grade,'subject':subject},'answer':ans,'models':panel,'files':names}
 
 
@@ -366,10 +454,41 @@ window.MathJax = {
 </script>
 <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 <style>
-body{font-family:Tahoma,Arial;background:#f5f7fb;margin:0;color:#172033}.w{max-width:900px;margin:auto;padding:18px}.c{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 7px 25px #00000009}h1{text-align:center}textarea,input,select{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d6dae0;border-radius:12px;margin:7px 0;font:inherit}textarea{min-height:145px}.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px}button{background:#0f766e;color:#fff;border:0;border-radius:13px;padding:13px 22px;font-weight:700;font-size:16px;cursor:pointer}.ans{white-space:pre-wrap;line-height:2.15;font-size:1.08rem}.ans mjx-container{direction:ltr;margin:.45em .1em!important;font-size:1.12em!important}.pill{display:inline-block;background:#ecfdf5;padding:5px 9px;border-radius:20px;margin:3px}.muted{color:#6b7280}.hide{display:none}.err{white-space:pre-wrap;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;padding:12px;border-radius:12px}.note{background:#fffbeb;border:1px solid #fde68a;padding:10px;border-radius:12px;margin:10px 0}@media(max-width:650px){.grid{grid-template-columns:1fr}}
-</style></head><body><div class="w"><h1>المساعد الدراسي</h1><p class="muted" style="text-align:center">اختر المرحلة والصف والمادة أولًا لمنع خلط المناهج، ثم اكتب السؤال أو ارفع الواجب.</p><div class="c"><form id="f"><div class="grid"><select id="stage" name="stage" required></select><select id="grade" name="grade" required></select><select id="subject" name="subject" required></select></div><textarea name="question" placeholder="اكتب السؤال كاملًا هنا"></textarea><input type="file" name="files" multiple accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"><button id="b">حل الواجب بالخطوات</button> <span id="s"></span></form></div><div id="r" class="c hide"><div id="err" class="err hide"></div><div id="meta"></div><h2>الحل</h2><div id="ans" class="ans"></div><details><summary>تفاصيل النماذج</summary><div id="models"></div></details></div></div><script>
+body{font-family:Tahoma,Arial;background:#f5f7fb;margin:0;color:#172033}.w{max-width:900px;margin:auto;padding:18px}.c{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 7px 25px #00000009}h1{text-align:center}textarea,input,select{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d6dae0;border-radius:12px;margin:7px 0;font:inherit}textarea{min-height:145px}.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px}button{background:#0f766e;color:#fff;border:0;border-radius:13px;padding:13px 22px;font-weight:700;font-size:16px;cursor:pointer}.ans{white-space:pre-wrap;line-height:2.15;font-size:1.08rem}.ans mjx-container{direction:ltr;margin:.45em .1em!important;font-size:1.12em!important}.math-preview{direction:ltr;text-align:center;background:#f8fafc;border:1px solid #dbe4ee;border-radius:12px;padding:12px;margin:6px 0 10px;font-size:1.18rem;min-height:26px}.math-preview mjx-container{margin:0!important}.pill{display:inline-block;background:#ecfdf5;padding:5px 9px;border-radius:20px;margin:3px}.muted{color:#6b7280}.hide{display:none}.err{white-space:pre-wrap;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;padding:12px;border-radius:12px}.note{background:#fffbeb;border:1px solid #fde68a;padding:10px;border-radius:12px;margin:10px 0}@media(max-width:650px){.grid{grid-template-columns:1fr}}
+</style></head><body><div class="w"><h1>المساعد الدراسي</h1><p class="muted" style="text-align:center">اختر المرحلة والصف والمادة أولًا لمنع خلط المناهج، ثم اكتب السؤال أو ارفع الواجب.</p><div class="c"><form id="f"><div class="grid"><select id="stage" name="stage" required></select><select id="grade" name="grade" required></select><select id="subject" name="subject" required></select></div><textarea name="question" placeholder="اكتب السؤال كاملًا هنا"></textarea><div id="mathPreview" class="math-preview hide"></div><input type="file" name="files" multiple accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"><button id="b">حل الواجب بالخطوات</button> <span id="s"></span></form></div><div id="r" class="c hide"><div id="err" class="err hide"></div><div id="meta"></div><h2>الحل</h2><div id="ans" class="ans"></div><details><summary>تفاصيل النماذج</summary><div id="models"></div></details></div></div><script>
 const curricula={"الابتدائي":['القرآن الكريم والدراسات الإسلامية','لغتي','الرياضيات','العلوم','اللغة الإنجليزية','الدراسات الاجتماعية','المهارات الرقمية','المهارات الحياتية والأسرية','التربية الفنية','التربية البدنية'],"المتوسط":['القرآن الكريم والدراسات الإسلامية','لغتي الخالدة','الرياضيات','العلوم','اللغة الإنجليزية','الدراسات الاجتماعية','المهارات الرقمية','المهارات الحياتية والأسرية','التربية الفنية','التربية البدنية'],"الثانوي":['الدراسات الإسلامية','اللغة العربية','اللغة الإنجليزية','الرياضيات','الأحياء','الكيمياء','الفيزياء','التقنية الرقمية','الدراسات الاجتماعية','التفكير الناقد','التربية الصحية والبدنية','إدارة الأعمال']};
 const grades={"الابتدائي":['الأول الابتدائي','الثاني الابتدائي','الثالث الابتدائي','الرابع الابتدائي','الخامس الابتدائي','السادس الابتدائي'],"المتوسط":['الأول المتوسط','الثاني المتوسط','الثالث المتوسط'],"الثانوي":['الأول الثانوي','الثاني الثانوي','الثالث الثانوي']};
 let st=document.querySelector('#stage'),gr=document.querySelector('#grade'),su=document.querySelector('#subject'); st.innerHTML='<option value="">اختر المرحلة</option>'+Object.keys(grades).map(x=>`<option>${x}</option>`).join(''); function refresh(){let x=st.value;gr.innerHTML='<option value="">اختر الصف</option>'+((grades[x]||[]).map(v=>`<option>${v}</option>`).join(''));su.innerHTML='<option value="">اختر المادة</option>'+((curricula[x]||[]).map(v=>`<option>${v}</option>`).join(''))} st.onchange=refresh;refresh();
-let f=document.querySelector('#f'),b=document.querySelector('#b'),s=document.querySelector('#s'),r=document.querySelector('#r'),err=document.querySelector('#err');f.onsubmit=async e=>{e.preventDefault();b.disabled=true;s.textContent='جاري الحل خطوة بخطوة…';r.classList.add('hide');err.classList.add('hide');try{let z=await fetch('/solve',{method:'POST',body:new FormData(f)}),x=await z.json();r.classList.remove('hide');if(!x.ok){err.textContent=x.error||'تعذر الحل';err.classList.remove('hide');document.querySelector('#ans').textContent='';document.querySelector('#meta').innerHTML='';return}let m=x.meta||{};document.querySelector('#meta').innerHTML=[m.stage,m.grade,m.subject].map(v=>`<span class="pill">${v||''}</span>`).join('');document.querySelector('#ans').textContent=x.answer||''; if(window.MathJax&&MathJax.typesetPromise){MathJax.typesetClear([document.querySelector('#ans')]);MathJax.typesetPromise([document.querySelector('#ans')]);}document.querySelector('#models').innerHTML=(x.models||[]).map(v=>`<p><b>${v.name} ${v.ok?'✓':'⚠'}</b><br>${(v.text||v.error||'').slice(0,1000)}</p>`).join('')||'<p>لا توجد نماذج خارجية متصلة حاليًا.</p>';s.textContent='تم'}catch(e){r.classList.remove('hide');err.textContent=e.message;err.classList.remove('hide');s.textContent=''}finally{b.disabled=false}};
+function escHtml(t){return (t||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+function renderAnswer(t){
+  var h=escHtml(t);
+  h=h.replace(/^### (.+)$/gm,'<h3>$1</h3>');
+  h=h.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+  h=h.replace(/\n/g,'<br>');
+  return h;
+}
+const qbox=document.querySelector('textarea[name="question"]');
+const preview=document.querySelector('#mathPreview');
+let previewTimer=null;
+qbox.addEventListener('input',function(){
+  clearTimeout(previewTimer);
+  const val=qbox.value.trim();
+  if(!val){preview.classList.add('hide');preview.textContent='';return;}
+  previewTimer=setTimeout(async function(){
+    try{
+      const fd=new FormData(); fd.append('text',val);
+      const res=await fetch('/format-math',{method:'POST',body:fd});
+      const data=await res.json();
+      if(data.latex){
+        preview.textContent='\\['+data.latex+'\\]';
+        preview.classList.remove('hide');
+        if(window.MathJax&&MathJax.typesetPromise){
+          MathJax.typesetClear([preview]);
+          await MathJax.typesetPromise([preview]);
+        }
+      }else{preview.classList.add('hide');preview.textContent='';}
+    }catch(e){preview.classList.add('hide');}
+  },280);
+});
+let f=document.querySelector('#f'),b=document.querySelector('#b'),s=document.querySelector('#s'),r=document.querySelector('#r'),err=document.querySelector('#err');f.onsubmit=async e=>{e.preventDefault();b.disabled=true;s.textContent='جاري الحل خطوة بخطوة…';r.classList.add('hide');err.classList.add('hide');try{let z=await fetch('/solve',{method:'POST',body:new FormData(f)}),x=await z.json();r.classList.remove('hide');if(!x.ok){err.textContent=x.error||'تعذر الحل';err.classList.remove('hide');document.querySelector('#ans').textContent='';document.querySelector('#meta').innerHTML='';return}let m=x.meta||{};document.querySelector('#meta').innerHTML=[m.stage,m.grade,m.subject].map(v=>`<span class="pill">${v||''}</span>`).join('');let ae=document.querySelector('#ans'); ae.innerHTML=renderAnswer(x.answer||''); if(window.MathJax&&MathJax.typesetPromise){MathJax.typesetClear([ae]);MathJax.typesetPromise([ae]);}document.querySelector('#models').innerHTML=(x.models||[]).map(v=>`<p><b>${v.name} ${v.ok?'✓':'⚠'}</b><br>${(v.text||v.error||'').slice(0,1000)}</p>`).join('')||'<p>تم استخدام محرك الحل المتاح.</p>';s.textContent='تم'}catch(e){r.classList.remove('hide');err.textContent=e.message;err.classList.remove('hide');s.textContent=''}finally{b.disabled=false}};
 </script></body></html>'''
