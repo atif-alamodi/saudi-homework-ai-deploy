@@ -99,7 +99,12 @@ def parse_file(name, b):
 
 
 def normalize_math(s: str):
-    return s.translate(str.maketrans('٠١٢٣٤٥٦٧٨٩×÷−','0123456789*/-')).replace('^','**')
+    s = s.translate(str.maketrans('٠١٢٣٤٥٦٧٨٩×÷−','0123456789*/-')).replace('^','**')
+    sup = {'⁰':'0','¹':'1','²':'2','³':'3','⁴':'4','⁵':'5','⁶':'6','⁷':'7','⁸':'8','⁹':'9'}
+    s = re.sub(r'[⁰¹²³⁴⁵⁶⁷⁸⁹]+', lambda m: '**' + ''.join(sup[c] for c in m.group(0)), s)
+    s = re.sub(r'(?<=\d)(?=[A-Za-z])', '*', s)
+    s = re.sub(r'(?<=[A-Za-z0-9)])(?=\()', '*', s)
+    return s
 
 
 def linear_steps(q: str):
@@ -163,8 +168,77 @@ def arithmetic_steps(q: str):
     return None
 
 
+def polynomial_steps(q: str):
+    try:
+        import sympy as sp
+        nq = normalize_math(q)
+        m = re.search(r'(\([^()\n]+\)\s*\*\*\s*\d+)', nq)
+        if not m:
+            return None
+        raw = m.group(1).replace(' ', '')
+        expr = sp.sympify(raw)
+        if not expr.free_symbols:
+            return None
+        expanded = sp.expand(expr)
+        if expanded == expr:
+            return None
+        if isinstance(expr, sp.Pow) and expr.exp.is_Integer:
+            n = int(expr.exp)
+            base = sp.expand(expr.base)
+            terms = list(base.as_ordered_terms())
+            if n == 2 and len(terms) == 2:
+                a, b = terms
+                a2, mid, b2 = sp.expand(a**2), sp.expand(2*a*b), sp.expand(b**2)
+                return (
+                    f'### فهم السؤال\nالمطلوب تبسيط/توسيع التعبير: `{sp.sstr(expr)}`.\n\n'
+                    '### القاعدة\nنستخدم مربع مجموع حدين: `(a + b)^2 = a^2 + 2ab + b^2`.\n\n'
+                    '### الحل خطوة بخطوة\n'
+                    f'1. نحدد الحدين: `a = {sp.sstr(a)}` و `b = {sp.sstr(b)}`.\n'
+                    f'2. مربع الحد الأول: `({sp.sstr(a)})^2 = {sp.sstr(a2)}`.\n'
+                    f'3. الحد الأوسط: `2({sp.sstr(a)})({sp.sstr(b)}) = {sp.sstr(mid)}`.\n'
+                    f'4. مربع الحد الثاني: `({sp.sstr(b)})^2 = {sp.sstr(b2)}`.\n'
+                    f'5. نجمع الحدود: `{sp.sstr(a2)} + {sp.sstr(mid)} + {sp.sstr(b2)}`.\n'
+                    f'6. بعد الترتيب والتبسيط: `{sp.sstr(expanded)}`.\n\n'
+                    '### التحقق\nتم التحقق جبريًا بتوسيع التعبير الأصلي ومقارنته بالناتج.\n\n'
+                    f'### الإجابة النهائية\n**{sp.sstr(expanded)}**'
+                )
+            if n == 3 and len(terms) == 2:
+                a, b = terms
+                t1,t2,t3,t4 = sp.expand(a**3), sp.expand(3*a**2*b), sp.expand(3*a*b**2), sp.expand(b**3)
+                return (
+                    f'### فهم السؤال\nالمطلوب توسيع: `{sp.sstr(expr)}`.\n\n'
+                    '### القاعدة\nنستخدم مكعب مجموع حدين: `(a+b)^3 = a^3 + 3a^2b + 3ab^2 + b^3`.\n\n'
+                    '### الحل خطوة بخطوة\n'
+                    f'1. `a = {sp.sstr(a)}` و `b = {sp.sstr(b)}`.\n'
+                    f'2. `a^3 = {sp.sstr(t1)}`.\n'
+                    f'3. `3a^2b = {sp.sstr(t2)}`.\n'
+                    f'4. `3ab^2 = {sp.sstr(t3)}`.\n'
+                    f'5. `b^3 = {sp.sstr(t4)}`.\n'
+                    f'6. بجمع الحدود نحصل على: `{sp.sstr(expanded)}`.\n\n'
+                    f'### الإجابة النهائية\n**{sp.sstr(expanded)}**'
+                )
+            if 2 <= n <= 5:
+                repeated = ' × '.join([f'({sp.sstr(base)})'] * n)
+                return (
+                    f'### فهم السؤال\nالمطلوب توسيع: `{sp.sstr(expr)}`.\n\n'
+                    '### الحل خطوة بخطوة\n'
+                    f'1. نحول القوة إلى ضرب متكرر: `{repeated}`.\n'
+                    '2. نوزع الضرب على الحدود، ثم نجمع الحدود المتشابهة.\n'
+                    f'3. بعد التوسيع والتجميع: `{sp.sstr(expanded)}`.\n\n'
+                    '### التحقق\nتمت مقارنة التوسيع بالتعبير الأصلي جبريًا.\n\n'
+                    f'### الإجابة النهائية\n**{sp.sstr(expanded)}**'
+                )
+        return (
+            f'### فهم السؤال\nالمطلوب تبسيط التعبير: `{sp.sstr(expr)}`.\n\n'
+            f'### الحل خطوة بخطوة\n1. نفك الأقواس ونوزع الضرب.\n2. نجمع الحدود المتشابهة.\n3. الناتج المبسط: `{sp.sstr(expanded)}`.\n\n'
+            f'### الإجابة النهائية\n**{sp.sstr(expanded)}**'
+        )
+    except Exception:
+        return None
+
+
 def local_math(q: str):
-    return linear_steps(q) or arithmetic_steps(q)
+    return linear_steps(q) or polynomial_steps(q) or arithmetic_steps(q)
 
 
 def extract_context(q, txt):
@@ -218,7 +292,7 @@ def health():
     return {'ok':True,'models':[m.get('name') for m in MODELS], 'curriculum':'strict'}
 
 @app.get('/', response_class=HTMLResponse)
-def home(): return HTMLResponse(HTML)
+def home(): return HTMLResponse(HTML, headers={'Cache-Control':'no-store, no-cache, must-revalidate, max-age=0','Pragma':'no-cache'})
 
 @app.post('/solve')
 async def solve(stage:str=Form(...), grade:str=Form(...), subject:str=Form(...), question:str=Form(''), files:list[UploadFile]=File(default=[])):
