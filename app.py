@@ -456,40 +456,144 @@ window.MathJax = {
 <script defer src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-svg.js"></script>
 <style>
 body{font-family:Tahoma,Arial;background:#f5f7fb;margin:0;color:#172033}.w{max-width:900px;margin:auto;padding:18px}.c{background:#fff;border:1px solid #e5e7eb;border-radius:20px;padding:18px;margin:14px 0;box-shadow:0 7px 25px #00000009}h1{text-align:center}textarea,input,select{width:100%;box-sizing:border-box;padding:12px;border:1px solid #d6dae0;border-radius:12px;margin:7px 0;font:inherit}textarea{min-height:145px}.grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px}button{background:#0f766e;color:#fff;border:0;border-radius:13px;padding:13px 22px;font-weight:700;font-size:16px;cursor:pointer}.ans{white-space:pre-wrap;line-height:2.15;font-size:1.08rem}.ans mjx-container{direction:ltr;margin:.45em .1em!important;font-size:1.12em!important}.math-preview{direction:ltr;text-align:center;background:#f8fafc;border:1px solid #dbe4ee;border-radius:12px;padding:12px;margin:6px 0 10px;font-size:1.18rem;min-height:26px}.math-preview mjx-container{margin:0!important}.pill{display:inline-block;background:#ecfdf5;padding:5px 9px;border-radius:20px;margin:3px}.muted{color:#6b7280}.hide{display:none}.err{white-space:pre-wrap;color:#991b1b;background:#fef2f2;border:1px solid #fecaca;padding:12px;border-radius:12px}.note{background:#fffbeb;border:1px solid #fde68a;padding:10px;border-radius:12px;margin:10px 0}@media(max-width:650px){.grid{grid-template-columns:1fr}}
-</style></head><body><div class="w"><h1>المساعد الدراسي</h1><p class="muted" style="text-align:center">اختر المرحلة والصف والمادة أولًا لمنع خلط المناهج، ثم اكتب السؤال أو ارفع الواجب.</p><div class="c"><form id="f"><div class="grid"><select id="stage" name="stage" required></select><select id="grade" name="grade" required></select><select id="subject" name="subject" required></select></div><textarea name="question" placeholder="اكتب السؤال كاملًا هنا"></textarea><div id="mathPreview" class="math-preview hide"></div><input type="file" name="files" multiple accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"><button id="b">حل الواجب بالخطوات</button> <span id="s"></span></form></div><div id="r" class="c hide"><div id="err" class="err hide"></div><div id="meta"></div><h2>الحل</h2><div id="ans" class="ans"></div><details><summary>تفاصيل النماذج</summary><div id="models"></div></details></div></div><script>
-const curricula={"الابتدائي":['القرآن الكريم والدراسات الإسلامية','لغتي','الرياضيات','العلوم','اللغة الإنجليزية','الدراسات الاجتماعية','المهارات الرقمية','المهارات الحياتية والأسرية','التربية الفنية','التربية البدنية'],"المتوسط":['القرآن الكريم والدراسات الإسلامية','لغتي الخالدة','الرياضيات','العلوم','اللغة الإنجليزية','الدراسات الاجتماعية','المهارات الرقمية','المهارات الحياتية والأسرية','التربية الفنية','التربية البدنية'],"الثانوي":['الدراسات الإسلامية','اللغة العربية','اللغة الإنجليزية','الرياضيات','الأحياء','الكيمياء','الفيزياء','التقنية الرقمية','الدراسات الاجتماعية','التفكير الناقد','التربية الصحية والبدنية','إدارة الأعمال']};
-const grades={"الابتدائي":['الأول الابتدائي','الثاني الابتدائي','الثالث الابتدائي','الرابع الابتدائي','الخامس الابتدائي','السادس الابتدائي'],"المتوسط":['الأول المتوسط','الثاني المتوسط','الثالث المتوسط'],"الثانوي":['الأول الثانوي','الثاني الثانوي','الثالث الثانوي']};
-let st=document.querySelector('#stage'),gr=document.querySelector('#grade'),su=document.querySelector('#subject'); st.innerHTML='<option value="">اختر المرحلة</option>'+Object.keys(grades).map(x=>`<option>${x}</option>`).join(''); function refresh(){let x=st.value;gr.innerHTML='<option value="">اختر الصف</option>'+((grades[x]||[]).map(v=>`<option>${v}</option>`).join(''));su.innerHTML='<option value="">اختر المادة</option>'+((curricula[x]||[]).map(v=>`<option>${v}</option>`).join(''))} st.onchange=refresh;refresh();
-function escHtml(t){return (t||'').replace(/[&<>]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;'}[c];});}
+</style></head><body><div class="w"><h1>المساعد الدراسي</h1><p class="muted" style="text-align:center">اختر المرحلة والصف والمادة أولًا لمنع خلط المناهج، ثم اكتب السؤال أو ارفع الواجب.</p><div class="c"><form id="f"><div class="grid"><select id="stage" name="stage" required><option value="">اختر المرحلة</option><option value="الابتدائي">الابتدائي</option><option value="المتوسط">المتوسط</option><option value="الثانوي">الثانوي</option></select><select id="grade" name="grade" required disabled><option value="">اختر الصف</option></select><select id="subject" name="subject" required disabled><option value="">اختر المادة</option></select></div><textarea name="question" placeholder="اكتب السؤال كاملًا هنا"></textarea><div id="mathPreview" class="math-preview hide"></div><input type="file" name="files" multiple accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"><button id="b" type="submit">حل الواجب بالخطوات</button> <span id="s"></span></form></div><div id="r" class="c hide"><div id="err" class="err hide"></div><div id="meta"></div><h2>الحل</h2><div id="ans" class="ans"></div><details><summary>تفاصيل النماذج</summary><div id="models"></div></details></div></div><script>
+const curricula = {
+  "الابتدائي": ['القرآن الكريم والدراسات الإسلامية','لغتي','الرياضيات','العلوم','اللغة الإنجليزية','الدراسات الاجتماعية','المهارات الرقمية','المهارات الحياتية والأسرية','التربية الفنية','التربية البدنية'],
+  "المتوسط": ['القرآن الكريم والدراسات الإسلامية','لغتي الخالدة','الرياضيات','العلوم','اللغة الإنجليزية','الدراسات الاجتماعية','المهارات الرقمية','المهارات الحياتية والأسرية','التربية الفنية','التربية البدنية'],
+  "الثانوي": ['الدراسات الإسلامية','اللغة العربية','اللغة الإنجليزية','الرياضيات','الأحياء','الكيمياء','الفيزياء','التقنية الرقمية','الدراسات الاجتماعية','التفكير الناقد','التربية الصحية والبدنية','إدارة الأعمال']
+};
+const grades = {
+  "الابتدائي": ['الأول الابتدائي','الثاني الابتدائي','الثالث الابتدائي','الرابع الابتدائي','الخامس الابتدائي','السادس الابتدائي'],
+  "المتوسط": ['الأول المتوسط','الثاني المتوسط','الثالث المتوسط'],
+  "الثانوي": ['الأول الثانوي','الثاني الثانوي','الثالث الثانوي']
+};
+
+function escHtml(t){
+  return (t || '').replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
 function renderAnswer(t){
-  var h=escHtml(t);
-  h=h.replace(/^### (.+)$/gm,'<h3>$1</h3>');
-  h=h.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
-  h=h.replace(/\n/g,'<br>');
+  let h = escHtml(t);
+  h = h.replace(/^### (.+)$/gm,'<h3>$1</h3>');
+  h = h.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>');
+  h = h.replace(/\n/g,'<br>');
   return h;
 }
-const qbox=document.querySelector('textarea[name="question"]');
-const preview=document.querySelector('#mathPreview');
-let previewTimer=null;
-qbox.addEventListener('input',function(){
-  clearTimeout(previewTimer);
-  const val=qbox.value.trim();
-  if(!val){preview.classList.add('hide');preview.textContent='';return;}
-  previewTimer=setTimeout(async function(){
+function fillSelect(el, placeholder, items){
+  el.innerHTML = '';
+  const first = document.createElement('option');
+  first.value = '';
+  first.textContent = placeholder;
+  el.appendChild(first);
+  (items || []).forEach(v => {
+    const o = document.createElement('option');
+    o.value = v;
+    o.textContent = v;
+    el.appendChild(o);
+  });
+  el.disabled = !items || items.length === 0;
+}
+function initUI(){
+  const st = document.getElementById('stage');
+  const gr = document.getElementById('grade');
+  const su = document.getElementById('subject');
+  const f = document.getElementById('f');
+  const b = document.getElementById('b');
+  const s = document.getElementById('s');
+  const r = document.getElementById('r');
+  const err = document.getElementById('err');
+  const qbox = document.querySelector('textarea[name="question"]');
+  const preview = document.getElementById('mathPreview');
+
+  function refreshStage(){
+    const stage = st.value;
+    fillSelect(gr, 'اختر الصف', grades[stage] || []);
+    fillSelect(su, 'اختر المادة', curricula[stage] || []);
+  }
+  st.addEventListener('change', refreshStage);
+  refreshStage();
+
+  let previewTimer = null;
+  qbox.addEventListener('input', function(){
+    clearTimeout(previewTimer);
+    const val = qbox.value.trim();
+    if(!val){ preview.classList.add('hide'); preview.textContent=''; return; }
+    previewTimer = setTimeout(async function(){
+      try{
+        const fd = new FormData(); fd.append('text', val);
+        const res = await fetch('/format-math',{method:'POST',body:fd});
+        const data = await res.json();
+        if(data.latex){
+          preview.textContent='\\['+data.latex+'\\]';
+          preview.classList.remove('hide');
+          if(window.MathJax && MathJax.typesetPromise){
+            if(MathJax.typesetClear) MathJax.typesetClear([preview]);
+            await MathJax.typesetPromise([preview]);
+          }
+        }else{ preview.classList.add('hide'); preview.textContent=''; }
+      }catch(e){ preview.classList.add('hide'); }
+    },280);
+  });
+
+  f.addEventListener('submit', async function(e){
+    e.preventDefault();
+    err.classList.add('hide');
+
+    if(!st.value || !gr.value || !su.value){
+      r.classList.remove('hide');
+      err.textContent='اختر المرحلة ثم الصف ثم المادة قبل الحل.';
+      err.classList.remove('hide');
+      return;
+    }
+
+    b.disabled=true;
+    s.textContent='جاري الحل خطوة بخطوة…';
+    r.classList.add('hide');
+
     try{
-      const fd=new FormData(); fd.append('text',val);
-      const res=await fetch('/format-math',{method:'POST',body:fd});
-      const data=await res.json();
-      if(data.latex){
-        preview.textContent='\\['+data.latex+'\\]';
-        preview.classList.remove('hide');
-        if(window.MathJax&&MathJax.typesetPromise){
-          MathJax.typesetClear([preview]);
-          await MathJax.typesetPromise([preview]);
-        }
-      }else{preview.classList.add('hide');preview.textContent='';}
-    }catch(e){preview.classList.add('hide');}
-  },280);
-});
-let f=document.querySelector('#f'),b=document.querySelector('#b'),s=document.querySelector('#s'),r=document.querySelector('#r'),err=document.querySelector('#err');f.onsubmit=async e=>{e.preventDefault();b.disabled=true;s.textContent='جاري الحل خطوة بخطوة…';r.classList.add('hide');err.classList.add('hide');try{let z=await fetch('/solve',{method:'POST',body:new FormData(f)}),x=await z.json();r.classList.remove('hide');if(!x.ok){err.textContent=x.error||'تعذر الحل';err.classList.remove('hide');document.querySelector('#ans').textContent='';document.querySelector('#meta').innerHTML='';return}let m=x.meta||{};document.querySelector('#meta').innerHTML=[m.stage,m.grade,m.subject].map(v=>`<span class="pill">${v||''}</span>`).join('');let ae=document.querySelector('#ans'); ae.innerHTML=renderAnswer(x.answer||''); if(window.MathJax&&MathJax.typesetPromise){MathJax.typesetClear([ae]);MathJax.typesetPromise([ae]);}document.querySelector('#models').innerHTML=(x.models||[]).map(v=>`<p><b>${v.name} ${v.ok?'✓':'⚠'}</b><br>${(v.text||v.error||'').slice(0,1000)}</p>`).join('')||'<p>تم استخدام محرك الحل المتاح.</p>';s.textContent='تم'}catch(e){r.classList.remove('hide');err.textContent=e.message;err.classList.remove('hide');s.textContent=''}finally{b.disabled=false}};
+      const z=await fetch('/solve',{method:'POST',body:new FormData(f)});
+      const x=await z.json();
+      r.classList.remove('hide');
+
+      if(!x.ok){
+        err.textContent=x.error||'تعذر الحل';
+        err.classList.remove('hide');
+        document.getElementById('ans').textContent='';
+        document.getElementById('meta').innerHTML='';
+        return;
+      }
+
+      const m=x.meta||{};
+      document.getElementById('meta').innerHTML=[m.stage,m.grade,m.subject]
+        .filter(Boolean)
+        .map(v=>'<span class="pill">'+escHtml(v)+'</span>').join('');
+
+      const ae=document.getElementById('ans');
+      ae.innerHTML=renderAnswer(x.answer||'');
+
+      if(window.MathJax && MathJax.typesetPromise){
+        if(MathJax.typesetClear) MathJax.typesetClear([ae]);
+        await MathJax.typesetPromise([ae]);
+      }
+
+      document.getElementById('models').innerHTML=(x.models||[]).map(v =>
+        '<p><b>'+escHtml(v.name)+' '+(v.ok?'✓':'⚠')+'</b><br>'+
+        escHtml((v.text||v.error||'').slice(0,1000))+'</p>'
+      ).join('') || '<p>تم استخدام محرك الحل المتاح.</p>';
+
+      s.textContent='تم';
+    }catch(e){
+      r.classList.remove('hide');
+      err.textContent='حدث خطأ أثناء الاتصال بالخدمة: '+(e.message||e);
+      err.classList.remove('hide');
+      s.textContent='';
+    }finally{
+      b.disabled=false;
+    }
+  });
+}
+if(document.readyState==='loading'){
+  document.addEventListener('DOMContentLoaded', initUI);
+}else{
+  initUI();
+}
 </script></body></html>'''
