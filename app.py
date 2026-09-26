@@ -443,7 +443,7 @@ async def solve(stage:str=Form(...), grade:str=Form(...), subject:str=Form(...),
     return {'ok':True,'meta':{'stage':stage,'grade':grade,'subject':subject},'answer':ans,'models':panel,'files':names}
 
 
-HTML='''<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>المساعد الدراسي</title>
+HTML=r'''<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>المساعد الدراسي</title>
 <script>
 window.MathJax = {
   tex: {
